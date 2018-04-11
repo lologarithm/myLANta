@@ -1,9 +1,12 @@
 package main
 
-import "net"
+import (
+	"net"
+	"time"
+)
 
 func main() {
-	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:9999")
+	addr, err := net.ResolveUDPAddr("udp", "239.0.0.0:9999")
 	if err != nil {
 		panic(err)
 	}
@@ -13,5 +16,8 @@ func main() {
 		panic(err)
 	}
 
-	conn.Write([]byte("hello"))
+	for {
+		time.Sleep(time.Second * 2)
+		conn.Write([]byte("hello"))
+	}
 }

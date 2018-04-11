@@ -7,8 +7,7 @@ import (
 )
 
 const (
-	bport string = "9998"
-	port  string = "9999"
+	bport string = "9999"
 )
 
 type Network struct {
@@ -25,7 +24,6 @@ func RunServer(exit chan int) {
 		outgoing:    make(chan *Message, 100),
 	}
 	go runBroadcastListener(network, exit)
-	go runDirectListener(network, exit)
 }
 
 func runBroadcastListener(s *Network, exit chan int) {
@@ -40,10 +38,14 @@ func runBroadcastListener(s *Network, exit chan int) {
 	if err != nil {
 		panic(err)
 	}
+	incoming := make(chan *Message, 100)
+	go s.listen(incoming)
 
 	alive := true
 	for alive {
 		select {
+		case msg := <-incoming:
+			log.Printf("Got a message baby: %#v", msg)
 		case msg := <-s.outgoing:
 			if msg.Target >= len(s.connections) {
 				break
@@ -56,29 +58,35 @@ func runBroadcastListener(s *Network, exit chan int) {
 			alive = false
 			break
 		default:
-			buf := make([]byte, 2048)
-			for {
-				n, ipaddr, err := s.bconn.ReadFromUDP(buf)
-				if err != nil {
-					fmt.Println("ERROR: ", err)
-					return
-				}
-				addr := ipaddr.String()
-				connidx, ok := s.connLookup[addr]
-				if !ok {
-					connidx = len(s.connections)
-					s.connLookup[addr] = connidx
-					s.connections = append(s.connections, &Client{Addr: ipaddr, ID: connidx, Alive: true})
-				}
-				if n == 0 {
-					continue
-				}
-				log.Printf("Message: %#v", buf[:n])
-			}
 		}
 	}
 	fmt.Println("Killing Socket Server")
 	s.conn.Close()
+}
+
+func (s *Network) listen(incoming chan *Message) {
+	buf := make([]byte, 2048)
+	for {
+		n, ipaddr, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			fmt.Println("ERROR: ", err)
+			return
+		}
+		if n == 0 {
+			continue
+		}
+		addr := ipaddr.String()
+		connidx, ok := s.connLookup[addr]
+		if !ok {
+			connidx = len(s.connections)
+			s.connLookup[addr] = connidx
+			s.connections = append(s.connections, &Client{Addr: ipaddr, ID: connidx, Alive: true})
+		}
+		incoming <- &Message{
+			Msg:    buf[:n],
+			Target: connidx,
+		}
+	}
 }
 
 func (s *Network) handleMessages() {
