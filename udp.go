@@ -3,71 +3,98 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
+	"strconv"
+	"sync/atomic"
+	"time"
 )
 
-const (
-	bport string = "9999"
-)
+var discoveryAddr string = "239.1.12.123:9999"
+
+const maxClient = 1 << 16
+const BroadcastTarget = 0
 
 type Network struct {
 	conn        *net.UDPConn
-	connections []*Client
-	connLookup  map[string]int
+	bconn       *net.UDPConn
+	connections []Client
+	connLookup  map[string]int16
+	lastID      int32
 	outgoing    chan *Message
 }
 
-func RunServer(exit chan int) {
+func RunServer(exit chan int) *Network {
 	network := &Network{
-		connections: []*Client{},
-		connLookup:  map[string]int{},
+		connections: make([]Client, maxClient), // max of 1024 clients connected
+		connLookup:  map[string]int16{},
 		outgoing:    make(chan *Message, 100),
+		lastID:      1,
 	}
+	rand.Seed(time.Now().Unix())
+	// castip := "239.1.2.3"
+	// castip := "225.1." + strconv.FormatInt(rand.Int63n(255), 10) + "." + strconv.FormatInt(rand.Int63n(255), 10)
+	castport := strconv.Itoa(rand.Intn(65535-49152) + 49152) //49152 to 65535
+
+	var err error
+	network.connections[0].Addr, err = net.ResolveUDPAddr("udp", discoveryAddr)
+	if err != nil {
+		panic(err)
+	}
+	network.connections[1].Addr, err = net.ResolveUDPAddr("udp", ":"+castport)
+	if err != nil {
+		panic(err)
+	}
+	network.conn, err = net.ListenUDP("udp", network.connections[1].Addr)
+	if err != nil {
+		panic(err)
+	}
+	// network.connLookup[]
+	network.bconn, err = net.ListenMulticastUDP("udp", nil, network.connections[0].Addr)
+	if err != nil {
+		panic(err)
+	}
+	log.Printf("I am %s", network.connections[1].Addr.String())
 	go runBroadcastListener(network, exit)
+	return network
 }
 
 func runBroadcastListener(s *Network, exit chan int) {
-	udpAddr, err := net.ResolveUDPAddr("udp", "239.0.0.0:"+bport)
-	if err != nil {
-		log.Printf("addr: %#v", udpAddr)
-		panic(err)
-	}
-	fmt.Printf("Now listening broadcasts on port: %s\n", bport)
-
-	s.conn, err = net.ListenMulticastUDP("udp", nil, udpAddr)
-	if err != nil {
-		panic(err)
-	}
+	log.Printf("Online.")
 	incoming := make(chan *Message, 100)
-	go s.listen(incoming)
+	go s.listen(s.conn, s.connections[1].Addr.Port, incoming)
+	go s.listen(s.bconn, s.connections[1].Addr.Port, incoming)
 
 	alive := true
 	for alive {
 		select {
 		case msg := <-incoming:
-			log.Printf("Got a message baby: %#v", msg)
-		case msg := <-s.outgoing:
-			if msg.Target >= len(s.connections) {
+			if msg.Target == 0 {
+				log.Printf("Heard my own multicast come back at me.")
 				break
 			}
-			conn := s.connections[msg.Target].Addr
-			if n, err := s.conn.WriteToUDP(msg.Msg, conn); err != nil {
+			log.Printf("Got a message from (%d): %#v", msg.Target, msg.Raw)
+		case msg := <-s.outgoing:
+			if msg.Target > int16(atomic.LoadInt32(&s.lastID)) {
+				break // can't find this user
+			}
+			addr := s.connections[msg.Target].Addr
+			if n, err := s.conn.WriteToUDP(msg.Raw, addr); err != nil {
 				fmt.Println("Error: ", err, " Bytes Written: ", n)
 			}
 		case <-exit:
 			alive = false
 			break
-		default:
 		}
 	}
 	fmt.Println("Killing Socket Server")
 	s.conn.Close()
 }
 
-func (s *Network) listen(incoming chan *Message) {
+func (s *Network) listen(conn *net.UDPConn, me int, incoming chan *Message) {
 	buf := make([]byte, 2048)
 	for {
-		n, ipaddr, err := s.conn.ReadFromUDP(buf)
+		n, ipaddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			fmt.Println("ERROR: ", err)
 			return
@@ -75,47 +102,26 @@ func (s *Network) listen(incoming chan *Message) {
 		if n == 0 {
 			continue
 		}
+		if ipaddr.Port == me {
+			continue // ignore my own messages
+		}
+		// Is this the fastest and simplest way to lookup unique connection?
 		addr := ipaddr.String()
+		log.Printf("Incoming from %s", addr)
 		connidx, ok := s.connLookup[addr]
 		if !ok {
-			connidx = len(s.connections)
+			val := atomic.AddInt32(&s.lastID, 1)
+			if val > maxClient {
+				panic("too many clients have connected")
+			}
+			log.Printf("  New conn, assigning idx: %d.", val)
+			connidx = int16(val)
 			s.connLookup[addr] = connidx
-			s.connections = append(s.connections, &Client{Addr: ipaddr, ID: connidx, Alive: true})
+			s.connections[connidx] = Client{Addr: ipaddr, ID: connidx, Alive: true}
 		}
 		incoming <- &Message{
-			Msg:    buf[:n],
+			Raw:    buf[:n],
 			Target: connidx,
 		}
 	}
-}
-
-func (s *Network) handleMessages() {
-	buf := make([]byte, 2048)
-	for {
-		n, ipaddr, err := s.conn.ReadFromUDP(buf)
-		if err != nil {
-			fmt.Println("ERROR: ", err)
-			return
-		}
-		addr := ipaddr.String()
-		connidx, ok := s.connLookup[addr]
-		if !ok {
-			connidx = len(s.connections)
-			s.connLookup[addr] = connidx
-			s.connections[len(s.connections)] = &Client{Addr: ipaddr, ID: connidx, Alive: true}
-		}
-		if n == 0 {
-			continue
-		}
-		log.Printf("Message: %#v", buf[:n])
-	}
-}
-
-type Message struct {
-	Msg    []byte
-	Target int
-}
-
-func (s *Network) sendMessages() {
-
 }
