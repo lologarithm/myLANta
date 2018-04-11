@@ -32,8 +32,6 @@ func RunServer(exit chan int) *Network {
 		lastID:      1,
 	}
 	rand.Seed(time.Now().Unix())
-	// castip := "239.1.2.3"
-	// castip := "225.1." + strconv.FormatInt(rand.Int63n(255), 10) + "." + strconv.FormatInt(rand.Int63n(255), 10)
 	castport := strconv.Itoa(rand.Intn(65535-49152) + 49152) //49152 to 65535
 
 	var err error
@@ -49,7 +47,6 @@ func RunServer(exit chan int) *Network {
 	if err != nil {
 		panic(err)
 	}
-	// network.connLookup[]
 	network.bconn, err = net.ListenMulticastUDP("udp", nil, network.connections[0].Addr)
 	if err != nil {
 		panic(err)
