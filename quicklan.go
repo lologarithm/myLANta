@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"log"
 	"net"
 	"os"
@@ -14,10 +15,23 @@ func main() {
 	network := RunServer(exit)
 
 	go func() {
+		hb := Heartbeat{
+			Clients: []string{"a client"},
+			Files:   map[string]string{"afile": "jajajaja"},
+		}
+
 		for {
+			msg, err := json.Marshal(hb)
+			if err != nil {
+				log.Printf("this aint working out.")
+				panic(err)
+			}
+			bytes := []byte{0, 0}
+			binary.LittleEndian.PutUint16(bytes, uint16(len(msg)))
 			time.Sleep(time.Second)
 			network.outgoing <- &Message{
-				Raw: []byte{1, 2, 3},
+				Target: BroadcastTarget,
+				Raw:    append(bytes, msg...),
 			}
 		}
 	}()
@@ -38,26 +52,24 @@ type Client struct {
 type Message struct {
 	Raw    []byte
 	Target int16
-	Kind   byte
-	Length uint32
-	Data   interface{}
+	Data   Heartbeat
 }
-
-type MsgKind byte
-
-const (
-	MsgKindUnknown MsgKind = iota
-	MsgKindClients
-	MsgKindFiles
-)
 
 func decode(m *Message) *Message {
 	dcd := &Message{
 		Raw:    m.Raw,
 		Target: m.Target,
-		Kind:   m.Raw[0],
-		Length: binary.LittleEndian.Uint32(m.Raw[1:3]),
 	}
-
+	hb := Heartbeat{}
+	lol := json.Unmarshal(m.Raw[:2], &hb)
+	if lol != nil {
+		panic(lol)
+	}
+	dcd.Data = hb
 	return dcd
+}
+
+type Heartbeat struct {
+	Clients []string
+	Files   map[string]string // map of file name to md5
 }

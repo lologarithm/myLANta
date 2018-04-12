@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/rand"
@@ -10,7 +11,7 @@ import (
 	"time"
 )
 
-var discoveryAddr string = "239.1.12.123:9999"
+var discoveryAddr = "239.1.12.123:9999"
 
 const maxClient = 1 << 16
 const BroadcastTarget = 0
@@ -26,7 +27,7 @@ type Network struct {
 
 func RunServer(exit chan int) *Network {
 	network := &Network{
-		connections: make([]Client, maxClient), // max of 1024 clients connected
+		connections: make([]Client, maxClient), // max of int16
 		connLookup:  map[string]int16{},
 		outgoing:    make(chan *Message, 100),
 		lastID:      1,
@@ -71,6 +72,12 @@ func runBroadcastListener(s *Network, exit chan int) {
 				break
 			}
 			log.Printf("Got a message from (%d): %#v", msg.Target, msg.Raw)
+			length := binary.LittleEndian.Uint16(msg.Raw[:2])
+			if length > 1500 {
+				panic("TOO BIG MSG")
+			}
+			result := decode(msg)
+			log.Printf("RESULTING DATA: %s", result.Data)
 		case msg := <-s.outgoing:
 			if msg.Target > int16(atomic.LoadInt32(&s.lastID)) {
 				break // can't find this user
